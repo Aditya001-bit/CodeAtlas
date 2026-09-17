@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, system-ui, sans-serif;
+  background: #09090b;
+  color: #fafafa;
+}
+
+.react-flow__edge-textbg {
+  fill: #18181b;
+  stroke: #27272a;
+}
+
+.react-flow__edge-text {
+  fill: #a1a1aa;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.react-flow__minimap {
+  background: #111113;
+  border: 1px solid #27272a;
+}
+
+.react-flow__controls {
+  background: #111113;
+  border: 1px solid #27272a;
+}
+
+.react-flow__controls-button {
+  background: #111113;
+  border-bottom: 1px solid #27272a;
+  color: #a1a1aa;
+}
+
+.react-flow__controls-button:hover {
+  background: #18181b;
+}
+
+.react-flow__controls-button svg {
+  fill: #a1a1aa;
+}
