@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+
+BugsInPy/
+tqdm_repo/
+temp_pipeline/
