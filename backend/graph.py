@@ -13,9 +13,7 @@ def build_graph(parsed_files):
         )
 
         for function in file_data["functions"]:
-            function_id = (
-                f"{file_name}:{function['name']}"
-            )
+            function_id = f"{file_name}:{function['name']}"
 
             graph.add_node(
                 function_id,
@@ -35,9 +33,7 @@ def build_graph(parsed_files):
             )
 
         for class_data in file_data["classes"]:
-            class_id = (
-                f"{file_name}:{class_data['name']}"
-            )
+            class_id = f"{file_name}:{class_data['name']}"
 
             graph.add_node(
                 class_id,
@@ -53,14 +49,23 @@ def build_graph(parsed_files):
                 relation="CONTAINS"
             )
 
-    function_lookup = {}
+    functions_by_file = {}
 
     for node, data in graph.nodes(data=True):
-        if data.get("type") == "function":
-            function_lookup.setdefault(
-                data["name"],
-                []
-            ).append(node)
+        if data.get("type") != "function":
+            continue
+
+        file_name = data["file"]
+        function_name = data["name"]
+
+        functions_by_file.setdefault(
+            file_name,
+            {}
+        )
+
+        functions_by_file[file_name][
+            function_name
+        ] = node
 
     for file_data in parsed_files:
         file_name = file_data["file"]
@@ -71,7 +76,7 @@ def build_graph(parsed_files):
             possible_files = [
                 imported_module.replace(".", "/") + ".py",
                 "/".join(module_parts) + "/__init__.py",
-                module_parts[-1] + ".py",
+                module_parts[-1] + ".py"
             ]
 
             for imported_file in possible_files:
@@ -83,24 +88,28 @@ def build_graph(parsed_files):
                     )
                     break
 
+        local_functions = functions_by_file.get(
+            file_name,
+            {}
+        )
+
         for function in file_data["functions"]:
             source = (
                 f"{file_name}:{function['name']}"
             )
 
             for called_function in function["calls"]:
-                targets = function_lookup.get(
-                    called_function,
-                    []
+
+                target = local_functions.get(
+                    called_function
                 )
 
-                for target in targets:
-                    if target != source:
-                        graph.add_edge(
-                            source,
-                            target,
-                            relation="CALLS"
-                        )
+                if target and target != source:
+                    graph.add_edge(
+                        source,
+                        target,
+                        relation="CALLS"
+                    )
 
     return graph
 
