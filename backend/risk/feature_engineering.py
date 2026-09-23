@@ -41,7 +41,10 @@ def get_source_metrics(source):
     function_node = None
 
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
             function_node = node
             break
 
@@ -78,11 +81,18 @@ def get_source_metrics(source):
             complexity += 1
 
         if isinstance(node, ast.BoolOp):
-            complexity += max(0, len(node.values) - 1)
+            complexity += max(
+                0,
+                len(node.values) - 1
+            )
 
-    max_nesting = calculate_max_nesting(function_node)
+    max_nesting = calculate_max_nesting(
+        function_node
+    )
 
-    num_args = len(function_node.args.args)
+    num_args = len(
+        function_node.args.args
+    )
 
     num_returns = sum(
         1
@@ -124,12 +134,18 @@ def calculate_max_nesting(function_node):
 
         if isinstance(node, nesting_nodes):
             depth += 1
-            max_depth = max(max_depth, depth)
+            max_depth = max(
+                max_depth,
+                depth
+            )
 
         for child in ast.iter_child_nodes(node):
             visit(child, depth)
 
-    visit(function_node, 0)
+    visit(
+        function_node,
+        0
+    )
 
     return max_depth
 
@@ -138,10 +154,19 @@ def build_file_import_index(analysis):
     result = {}
 
     for file_data in analysis:
-        file_name = file_data.get("file", "")
-        imports = file_data.get("imports", [])
+        file_name = file_data.get(
+            "file",
+            ""
+        )
 
-        result[file_name] = len(imports)
+        imports = file_data.get(
+            "imports",
+            []
+        )
+
+        result[file_name] = len(
+            imports
+        )
 
     return result
 
@@ -150,13 +175,21 @@ def find_function_data(analysis, node_id):
     if ":" not in node_id:
         return None
 
-    file_name, function_name = node_id.split(":", 1)
+    file_name, function_name = node_id.split(
+        ":",
+        1
+    )
 
     for file_data in analysis:
+
         if file_data.get("file") != file_name:
             continue
 
-        for function in file_data.get("functions", []):
+        for function in file_data.get(
+            "functions",
+            []
+        ):
+
             if function.get("name") == function_name:
                 return file_data, function
 
@@ -168,7 +201,9 @@ def calculate_graph_metrics(graph):
         return {}
 
     try:
-        betweenness = nx.betweenness_centrality(graph)
+        betweenness = nx.betweenness_centrality(
+            graph
+        )
     except Exception:
         betweenness = {
             node: 0
@@ -176,7 +211,9 @@ def calculate_graph_metrics(graph):
         }
 
     try:
-        pagerank = nx.pagerank(graph)
+        pagerank = nx.pagerank(
+            graph
+        )
     except Exception:
         pagerank = {
             node: 0
@@ -195,6 +232,7 @@ def calculate_graph_metrics(graph):
             node,
             data=True
         ):
+
             relation = data.get(
                 "relation",
                 data.get("type", "")
@@ -207,6 +245,7 @@ def calculate_graph_metrics(graph):
             node,
             data=True
         ):
+
             relation = data.get(
                 "relation",
                 data.get("type", "")
@@ -223,33 +262,56 @@ def calculate_graph_metrics(graph):
             "callee_count": callees,
             "dependency_count": dependencies,
             "degree": graph.degree(node),
-            "betweenness": betweenness.get(node, 0),
-            "pagerank": pagerank.get(node, 0),
+            "betweenness": betweenness.get(
+                node,
+                0
+            ),
+            "pagerank": pagerank.get(
+                node,
+                0
+            ),
         }
 
     return metrics
 
 
 def build_raw_features(analysis, graph):
-    file_imports = build_file_import_index(analysis)
-    graph_metrics = calculate_graph_metrics(graph)
+    file_imports = build_file_import_index(
+        analysis
+    )
+
+    graph_metrics = calculate_graph_metrics(
+        graph
+    )
 
     rows = []
 
     for file_data in analysis:
-        file_name = file_data.get("file", "")
 
-        for function in file_data.get("functions", []):
+        file_name = file_data.get(
+            "file",
+            ""
+        )
+
+        for function in file_data.get(
+            "functions",
+            []
+        ):
 
             function_name = function.get(
                 "name",
                 ""
             )
 
-            node_id = f"{file_name}:{function_name}"
+            node_id = (
+                f"{file_name}:{function_name}"
+            )
 
+            # IMPORTANT:
+            # parser.py stores the extracted
+            # function source in the "code" field.
             source = function.get(
-                "source",
+                "code",
                 ""
             )
 
@@ -302,7 +364,9 @@ def percentile_map(values):
         np.argsort(values)
     )
 
-    return order / (len(values) - 1)
+    return order / (
+        len(values) - 1
+    )
 
 
 def normalize_features(rows):
@@ -317,7 +381,12 @@ def normalize_features(rows):
     for feature in ALL_FEATURES:
 
         values = [
-            float(row.get(feature, 0))
+            float(
+                row.get(
+                    feature,
+                    0
+                )
+            )
             for row in rows
         ]
 
@@ -328,6 +397,7 @@ def normalize_features(rows):
         for i, value in enumerate(
             percentiles
         ):
+
             normalized[i][
                 f"{feature}_normalized"
             ] = float(value)
@@ -380,15 +450,28 @@ def repository_feature_summary(rows):
     for feature in ALL_FEATURES:
 
         values = [
-            float(row.get(feature, 0))
+            float(
+                row.get(
+                    feature,
+                    0
+                )
+            )
             for row in rows
         ]
 
         summary[feature] = {
-            "min": float(np.min(values)),
-            "max": float(np.max(values)),
-            "mean": float(np.mean(values)),
-            "median": float(np.median(values)),
+            "min": float(
+                np.min(values)
+            ),
+            "max": float(
+                np.max(values)
+            ),
+            "mean": float(
+                np.mean(values)
+            ),
+            "median": float(
+                np.median(values)
+            ),
         }
 
     return summary

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import "./App.css";
 import {
   LayoutDashboard,
   Network,
@@ -12,7 +13,6 @@ import {
 import CodeMap from "./CodeMap";
 import RiskView from "./RiskView";
 import AskCodebase from "./AskCodebase";
-
 
 function App() {
   const [activePage, setActivePage] = useState("Dashboard");
@@ -31,7 +31,7 @@ function App() {
   async function analyzeRepository(file) {
     if (!file) return;
 
-    if (!file.name.endsWith(".zip")) {
+    if (!file.name.toLowerCase().endsWith(".zip")) {
       setError("Please upload a ZIP file.");
       return;
     }
@@ -54,21 +54,68 @@ function App() {
         throw new Error(data.error || "Analysis failed");
       }
 
+      // --------------------------------------------------------
+      // Get ML risk results for the newly analyzed repository
+      // --------------------------------------------------------
+
+      let highRiskCount = 0;
+
+      try {
+        const riskResponse = await fetch("/api/risk");
+        const riskData = await riskResponse.json();
+
+        if (Array.isArray(riskData)) {
+          highRiskCount = riskData.filter(
+            (item) => item.risk_level === "High"
+          ).length;
+        }
+      } catch (riskError) {
+        console.error(
+          "Could not load risk predictions:",
+          riskError
+        );
+      }
+
+      // --------------------------------------------------------
+      // Update dashboard statistics
+      // --------------------------------------------------------
+
       setStats({
         files: data.files,
         nodes: data.nodes,
         edges: data.edges,
-        highRisk: 0,
+        highRisk: highRiskCount,
       });
 
+      // This is the source of truth for the current
+      // frontend session.
       setRepository(file.name);
 
+      // Open Code Map after successful analysis.
       setActivePage("Code Map");
+
     } catch (err) {
-      setError(err.message);
+      setError(
+        err.message || "Analysis failed"
+      );
     } finally {
       setUploading(false);
     }
+  }
+
+  const hasRepository = Boolean(repository);
+
+  function openPage(page) {
+    if (!hasRepository && page !== "Dashboard") {
+      setActivePage("Dashboard");
+      setError(
+        "Analyze a repository before opening this view."
+      );
+      return;
+    }
+
+    setError("");
+    setActivePage(page);
   }
 
   return (
@@ -78,16 +125,21 @@ function App() {
       <aside className="w-64 border-r border-white/10 bg-[#0d0d0f] p-5 flex flex-col">
 
         <div className="flex items-center gap-3 mb-10">
+
           <div className="w-9 h-9 rounded-lg bg-white text-black flex items-center justify-center font-bold">
             ◈
           </div>
 
           <div>
-            <h1 className="font-semibold text-lg">CodeAtlas</h1>
+            <h1 className="font-semibold text-lg">
+              CodeAtlas
+            </h1>
+
             <p className="text-xs text-zinc-500">
               Code Intelligence
             </p>
           </div>
+
         </div>
 
         <div className="text-xs text-zinc-600 uppercase tracking-wider mb-3">
@@ -100,30 +152,31 @@ function App() {
             icon={<LayoutDashboard size={18} />}
             label="Dashboard"
             active={activePage === "Dashboard"}
-            onClick={() => setActivePage("Dashboard")}
+            onClick={() => openPage("Dashboard")}
           />
 
           <NavItem
             icon={<Network size={18} />}
             label="Code Map"
             active={activePage === "Code Map"}
-            onClick={() => setActivePage("Code Map")}
+            disabled={!hasRepository}
+            onClick={() => openPage("Code Map")}
           />
 
           <NavItem
             icon={<ShieldAlert size={18} />}
             label="Risk View"
             active={activePage === "Risk View"}
-            onClick={() => setActivePage("Risk View")}
+            disabled={!hasRepository}
+            onClick={() => openPage("Risk View")}
           />
-
-          
 
           <NavItem
             icon={<MessageSquare size={18} />}
             label="Ask Codebase"
             active={activePage === "Ask Codebase"}
-            onClick={() => setActivePage("Ask Codebase")}
+            disabled={!hasRepository}
+            onClick={() => openPage("Ask Codebase")}
           />
 
         </nav>
@@ -134,11 +187,16 @@ function App() {
           <div className="border border-white/10 rounded-xl p-4 bg-white/[0.02]">
 
             <div className="flex items-center gap-2 mb-2">
-              <FolderGit2 size={16} className="text-zinc-400" />
+
+              <FolderGit2
+                size={16}
+                className="text-zinc-400"
+              />
 
               <span className="text-sm">
                 Repository
               </span>
+
             </div>
 
             <p className="text-sm text-zinc-400 truncate">
@@ -166,15 +224,21 @@ function App() {
             uploading={uploading}
             error={error}
             onAnalyze={analyzeRepository}
-            onCodeMap={() => setActivePage("Code Map")}
+            onCodeMap={() => openPage("Code Map")}
           />
         )}
 
-        {activePage === "Code Map" && <CodeMap />}
+        {activePage === "Code Map" && (
+          <CodeMap repository={repository} />
+        )}
 
-        {activePage === "Risk View" && <RiskView />}
+        {activePage === "Risk View" && (
+          <RiskView />
+        )}
 
-        {activePage === "Ask Codebase" && <AskCodebase />}
+        {activePage === "Ask Codebase" && (
+          <AskCodebase />
+        )}
 
       </main>
 
@@ -204,19 +268,34 @@ function Dashboard({
             type="file"
             accept=".zip"
             className="hidden"
-            onChange={(e) => onAnalyze(e.target.files[0])}
+            disabled={uploading}
+            onChange={(e) => {
+              onAnalyze(e.target.files[0]);
+              e.target.value = "";
+            }}
           />
 
-          <span className="flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-zinc-200 transition">
+          <span
+            className={`flex items-center gap-2 bg-white text-black px-4 py-2 rounded-lg text-sm font-medium transition ${
+              uploading
+                ? "opacity-60 cursor-not-allowed"
+                : "hover:bg-zinc-200"
+            }`}
+          >
 
             {uploading ? (
               <>
-                <Loader2 size={16} className="animate-spin" />
+                <Loader2
+                  size={16}
+                  className="animate-spin"
+                />
+
                 Analyzing...
               </>
             ) : (
               <>
                 <Upload size={16} />
+
                 Analyze Repository
               </>
             )}
@@ -271,6 +350,7 @@ function Dashboard({
           <div className="p-5 border-b border-white/10 flex items-center justify-between">
 
             <div>
+
               <h3 className="font-medium">
                 Dependency Graph
               </h3>
@@ -278,11 +358,17 @@ function Dashboard({
               <p className="text-sm text-zinc-500 mt-1">
                 Visualize relationships inside your codebase.
               </p>
+
             </div>
 
             <button
               onClick={onCodeMap}
-              className="text-sm text-zinc-400 hover:text-white"
+              disabled={stats.files === 0}
+              className={`text-sm ${
+                stats.files === 0
+                  ? "text-zinc-700 cursor-not-allowed"
+                  : "text-zinc-400 hover:text-white"
+              }`}
             >
               Open Code Map →
             </button>
@@ -345,12 +431,26 @@ function Dashboard({
 }
 
 
-function NavItem({ icon, label, active, onClick }) {
+function NavItem({
+  icon,
+  label,
+  active,
+  onClick,
+  disabled = false,
+}) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
+      title={
+        disabled
+          ? "Analyze a repository before opening this view"
+          : undefined
+      }
       className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition ${
-        active
+        disabled
+          ? "text-zinc-700 cursor-not-allowed"
+          : active
           ? "bg-white/10 text-white"
           : "text-zinc-500 hover:bg-white/5 hover:text-zinc-200"
       }`}
@@ -362,7 +462,10 @@ function NavItem({ icon, label, active, onClick }) {
 }
 
 
-function StatCard({ label, value }) {
+function StatCard({
+  label,
+  value,
+}) {
   return (
     <div className="border border-white/10 rounded-xl bg-[#0d0d0f] p-5">
 
@@ -374,25 +477,6 @@ function StatCard({ label, value }) {
         {value}
       </p>
 
-    </div>
-  );
-}
-
-
-function Placeholder({ title }) {
-  return (
-    <div className="h-screen flex items-center justify-center">
-      <div className="text-center">
-
-        <h1 className="text-2xl font-semibold">
-          {title}
-        </h1>
-
-        <p className="text-zinc-500 mt-2">
-          Coming next...
-        </p>
-
-      </div>
     </div>
   );
 }
