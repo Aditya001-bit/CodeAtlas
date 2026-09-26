@@ -2,7 +2,6 @@ from typing import Dict, List, Any
 
 import numpy as np
 import pandas as pd
-import shap
 
 
 # ============================================================
@@ -26,15 +25,11 @@ FEATURE_LABELS = {
 
 
 # ============================================================
-# RISK CALIBRATION
+# FINAL CODEATLAS RISK THRESHOLDS
 # ============================================================
 
-LOW_MAX = 0.05
-MEDIUM_MAX = 0.10
-
-HIGH_SCORE_START = 75.0
-MEDIUM_SCORE_START = 50.0
-LOW_SCORE_MAX = 50.0
+LOW_THRESHOLD = 0.20
+HIGH_THRESHOLD = 0.30
 
 
 # ============================================================
@@ -46,24 +41,102 @@ def get_feature_importances(
     features: List[str],
 ) -> Dict[str, float]:
     """
-    Return global Random Forest feature importances.
+    Extract global feature importance from the underlying
+    Logistic Regression model.
 
-    These describe the model globally.
+    Production pipeline:
 
-    They are NOT used as the primary explanation mechanism.
-    SHAP is used for instance-specific explanations.
+        StandardScaler
+            ↓
+        Logistic Regression
+            ↓
+        Isotonic Calibration
+
+    Absolute coefficient magnitude is used as global
+    model-level importance.
+
+    These are model signals, not causal explanations.
     """
 
-    if not hasattr(model, "feature_importances_"):
-        return {}
+    # --------------------------------------------------------
+    # Direct Logistic Regression
+    # --------------------------------------------------------
 
-    return {
-        feature: float(importance)
-        for feature, importance in zip(
-            features,
-            model.feature_importances_,
-        )
-    }
+    if hasattr(model, "coef_"):
+
+        coefficients = np.asarray(
+            model.coef_
+        ).reshape(-1)
+
+        return {
+            feature: float(abs(coefficient))
+            for feature, coefficient in zip(
+                features,
+                coefficients,
+            )
+        }
+
+    # --------------------------------------------------------
+    # CalibratedClassifierCV
+    # --------------------------------------------------------
+
+    if hasattr(
+        model,
+        "calibrated_classifiers_",
+    ):
+
+        fold_coefficients = []
+
+        for calibrated_model in (
+            model.calibrated_classifiers_
+        ):
+
+            estimator = getattr(
+                calibrated_model,
+                "estimator",
+                None,
+            )
+
+            if estimator is None:
+
+                estimator = getattr(
+                    calibrated_model,
+                    "base_estimator",
+                    None,
+                )
+
+            if (
+                estimator is not None
+                and hasattr(
+                    estimator,
+                    "coef_",
+                )
+            ):
+
+                fold_coefficients.append(
+                    np.asarray(
+                        estimator.coef_
+                    ).reshape(-1)
+                )
+
+        if fold_coefficients:
+
+            mean_coefficients = np.mean(
+                np.vstack(
+                    fold_coefficients
+                ),
+                axis=0,
+            )
+
+            return {
+                feature: float(abs(coefficient))
+                for feature, coefficient in zip(
+                    features,
+                    mean_coefficients,
+                )
+            }
+
+    return {}
 
 
 # ============================================================
@@ -71,12 +144,16 @@ def get_feature_importances(
 # ============================================================
 
 def _numeric(value: Any):
+
     try:
+
         return float(value)
+
     except (
         TypeError,
         ValueError,
     ):
+
         return None
 
 
@@ -97,151 +174,238 @@ def _format_value(
         "callee_count",
         "degree",
     }:
-        return str(int(round(value)))
+
+        return str(
+            int(
+                round(value)
+            )
+        )
 
     if feature == "betweenness":
+
         return f"{value:.3f}"
 
     if feature == "pagerank":
+
         return f"{value:.4f}"
 
     return f"{value:.2f}"
 
 
 # ============================================================
-# SHAP
+# LOGISTIC REGRESSION COEFFICIENTS
 # ============================================================
 
-def _get_shap_values(
+def _get_logistic_coefficients(
     model,
+    features: List[str],
+) -> Dict[str, float]:
+    """
+    Extract coefficients from the underlying Logistic
+    Regression model.
+    """
+
+    # --------------------------------------------------------
+    # Direct Logistic Regression
+    # --------------------------------------------------------
+
+    if hasattr(model, "coef_"):
+
+        coefficients = np.asarray(
+            model.coef_
+        ).reshape(-1)
+
+        return {
+            feature: float(coefficient)
+            for feature, coefficient in zip(
+                features,
+                coefficients,
+            )
+        }
+
+    # --------------------------------------------------------
+    # CalibratedClassifierCV
+    # --------------------------------------------------------
+
+    if hasattr(
+        model,
+        "calibrated_classifiers_",
+    ):
+
+        fold_coefficients = []
+
+        for calibrated_model in (
+            model.calibrated_classifiers_
+        ):
+
+            estimator = getattr(
+                calibrated_model,
+                "estimator",
+                None,
+            )
+
+            if estimator is None:
+
+                estimator = getattr(
+                    calibrated_model,
+                    "base_estimator",
+                    None,
+                )
+
+            if (
+                estimator is not None
+                and hasattr(
+                    estimator,
+                    "coef_",
+                )
+            ):
+
+                fold_coefficients.append(
+                    np.asarray(
+                        estimator.coef_
+                    ).reshape(-1)
+                )
+
+        if fold_coefficients:
+
+            mean_coefficients = np.mean(
+                np.vstack(
+                    fold_coefficients
+                ),
+                axis=0,
+            )
+
+            return {
+                feature: float(coefficient)
+                for feature, coefficient in zip(
+                    features,
+                    mean_coefficients,
+                )
+            }
+
+    return {}
+
+
+# ============================================================
+# LOCAL CONTRIBUTIONS
+# ============================================================
+
+def _get_local_contributions(
+    model,
+    scaler,
     feature_row: Dict[str, Any],
     features: List[str],
-):
+) -> Dict[str, float]:
     """
-    Calculate SHAP contributions for one function.
+    Calculate local Logistic Regression contributions.
 
-    Each contribution represents how a feature pushed the
-    Random Forest prediction for THIS PARTICULAR function.
+    contribution =
+        standardized_feature × coefficient
+
+    Positive contribution:
+        pushes toward higher risk.
+
+    Negative contribution:
+        pushes toward lower risk.
+
+    These are model contributions, not causal claims.
     """
+
+    coefficients = _get_logistic_coefficients(
+        model,
+        features,
+    )
+
+    if not coefficients:
+
+        return {}
+
+    # --------------------------------------------------------
+    # Raw values
+    # --------------------------------------------------------
 
     values = {}
 
-    try:
-        row = {}
+    for feature in features:
 
-        for feature in features:
-            value = _numeric(
-                feature_row.get(feature)
-            )
-
-            if value is None:
-                value = 0.0
-
-            row[feature] = value
-
-        X = pd.DataFrame(
-            [row],
-            columns=features,
+        value = _numeric(
+            feature_row.get(feature)
         )
 
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X)
+        if value is None:
 
-        # SHAP output differs slightly between versions.
-        #
-        # For binary classification we want the contribution
-        # toward class 1 = risky.
+            value = 0.0
 
-        if isinstance(shap_values, list):
+        values[feature] = value
 
-            if len(shap_values) >= 2:
-                values_array = np.asarray(
-                    shap_values[1]
-                )[0]
-            else:
-                values_array = np.asarray(
-                    shap_values[0]
-                )[0]
+    # --------------------------------------------------------
+    # Preserve feature names
+    # --------------------------------------------------------
 
-        else:
+    X = pd.DataFrame(
+        [values],
+        columns=features,
+    )
 
-            values_array = np.asarray(
-                shap_values
-            )
+    # --------------------------------------------------------
+    # Apply exact production scaler
+    # --------------------------------------------------------
 
-            # Newer SHAP versions may return:
-            # (samples, features, classes)
-            if values_array.ndim == 3:
+    if scaler is not None:
 
-                if values_array.shape[-1] >= 2:
-                    values_array = values_array[
-                        0,
-                        :,
-                        1,
-                    ]
-                else:
-                    values_array = values_array[
-                        0,
-                        :,
-                        0,
-                    ]
+        scaled_values = scaler.transform(
+            X
+        )[0]
 
-            # Standard shape:
-            # (samples, features)
-            elif values_array.ndim == 2:
+    else:
 
-                values_array = values_array[0]
-
-            # Unexpected shape
-            elif values_array.ndim == 1:
-                pass
-
-            else:
-                return {}
-
-        for feature, contribution in zip(
-            features,
-            values_array,
-        ):
-            values[feature] = float(
-                contribution
-            )
-
-    except Exception as error:
-        print(
-            f"SHAP explanation failed: {error}"
+        scaled_values = X.iloc[
+            0
+        ].to_numpy(
+            dtype=float
         )
 
-    return values
+    # --------------------------------------------------------
+    # Calculate raw contributions
+    # --------------------------------------------------------
+
+    contributions = {}
+
+    for feature, scaled_value in zip(
+        features,
+        scaled_values,
+    ):
+
+        coefficient = coefficients.get(
+            feature,
+            0.0,
+        )
+
+        contributions[feature] = float(
+            scaled_value
+            * coefficient
+        )
+
+    return contributions
 
 
 # ============================================================
-# INSTANCE-SPECIFIC SIGNALS
+# FUNCTION PROFILE
 # ============================================================
 
 def _build_function_profile(
     feature_row: Dict[str, Any],
     model,
+    scaler,
     features: List[str],
 ):
     """
-    Build an explanation for ONE function.
-
-    Unlike the previous implementation, this does not simply
-    select globally important features.
-
-    SHAP calculates the contribution of every feature for the
-    current function.
-
-    Positive contribution:
-        pushes the prediction toward risk.
-
-    Negative contribution:
-        pushes the prediction away from risk.
+    Build an instance-specific profile.
     """
 
-    shap_values = _get_shap_values(
+    contributions = _get_local_contributions(
         model=model,
+        scaler=scaler,
         feature_row=feature_row,
         features=features,
     )
@@ -255,10 +419,11 @@ def _build_function_profile(
         )
 
         if value is None:
+
             value = 0.0
 
         contribution = float(
-            shap_values.get(
+            contributions.get(
                 feature,
                 0.0,
             )
@@ -275,7 +440,6 @@ def _build_function_profile(
             }
         )
 
-    # Sort by actual local contribution.
     candidates.sort(
         key=lambda item: item[
             "absolute_contribution"
@@ -287,10 +451,53 @@ def _build_function_profile(
 
 
 # ============================================================
-# SHAP SIGNAL TEXT
+# NORMALIZE LOCAL IMPORTANCE
 # ============================================================
 
-def _shap_signal_text(
+def _normalize_local_importance(
+    selected,
+):
+    """
+    Convert local contribution magnitudes into relative
+    importance values.
+
+    The strongest feature gets 1.0.
+
+    This is purely a UI representation.
+    """
+
+    if not selected:
+
+        return selected
+
+    total = sum(
+        item["absolute_contribution"]
+        for item in selected
+    )
+
+    if total <= 0:
+
+        for item in selected:
+
+            item["display_importance"] = 0.0
+
+        return selected
+
+    for item in selected:
+
+        item["display_importance"] = (
+            item["absolute_contribution"]
+            / total
+        )
+
+    return selected
+
+
+# ============================================================
+# SIGNAL TEXT
+# ============================================================
+
+def _signal_text(
     feature: str,
     value: float,
     contribution: float,
@@ -298,7 +505,10 @@ def _shap_signal_text(
 
     label = FEATURE_LABELS.get(
         feature,
-        feature.replace("_", " "),
+        feature.replace(
+            "_",
+            " ",
+        ),
     )
 
     formatted = _format_value(
@@ -307,6 +517,7 @@ def _shap_signal_text(
     )
 
     if contribution > 0:
+
         return (
             f"{label.capitalize()} "
             f"({formatted}) increased predicted risk"
@@ -315,112 +526,6 @@ def _shap_signal_text(
     return (
         f"{label.capitalize()} "
         f"({formatted}) reduced predicted risk"
-    )
-
-
-# ============================================================
-# RISK SCORE
-# ============================================================
-
-def probability_to_risk_score(
-    probability: float,
-) -> float:
-    """
-    Convert Random Forest probability into the CodeAtlas
-    0-100 Risk Index.
-
-    This is a presentation index.
-
-    It does NOT modify the underlying model probability.
-    """
-
-    probability = max(
-        0.0,
-        min(
-            float(probability),
-            1.0,
-        ),
-    )
-
-    # --------------------------------------------------------
-    # LOW
-    # 0% -> 0
-    # 5% -> 50
-    # --------------------------------------------------------
-
-    if probability < LOW_MAX:
-
-        score = (
-            probability / LOW_MAX
-        ) * LOW_SCORE_MAX
-
-        return round(
-            score,
-            2,
-        )
-
-    # --------------------------------------------------------
-    # MEDIUM
-    # 5% -> 50
-    # 10% -> 75
-    # --------------------------------------------------------
-
-    if probability < MEDIUM_MAX:
-
-        progress = (
-            probability - LOW_MAX
-        ) / (
-            MEDIUM_MAX - LOW_MAX
-        )
-
-        score = (
-            MEDIUM_SCORE_START
-            + progress
-            * (
-                HIGH_SCORE_START
-                - MEDIUM_SCORE_START
-            )
-        )
-
-        return round(
-            score,
-            2,
-        )
-
-    # --------------------------------------------------------
-    # HIGH
-    # 10% -> 75
-    # 20%+ -> 100
-    # --------------------------------------------------------
-
-    high_range = (
-        0.20 - MEDIUM_MAX
-    )
-
-    progress = (
-        probability - MEDIUM_MAX
-    ) / high_range
-
-    progress = max(
-        0.0,
-        min(
-            progress,
-            1.0,
-        ),
-    )
-
-    score = (
-        HIGH_SCORE_START
-        + progress
-        * (
-            100.0
-            - HIGH_SCORE_START
-        )
-    )
-
-    return round(
-        score,
-        2,
     )
 
 
@@ -434,40 +539,43 @@ def explain_prediction(
     risk_probability: float,
     model=None,
     features: List[str] = None,
+    scaler=None,
 ) -> Dict[str, Any]:
     """
-    Generate the CodeAtlas risk explanation.
-
-    Random Forest:
-        determines risk probability.
-
-    SHAP:
-        explains the individual prediction.
-
-    Risk Index:
-        provides the 0-100 UI representation.
+    Generate final CodeAtlas risk explanation.
     """
 
     probability = float(
         risk_probability
     )
 
-    # --------------------------------------------------------
+    probability = max(
+        0.0,
+        min(
+            probability,
+            1.0,
+        ),
+    )
+
+    # ========================================================
     # RISK LEVEL
-    # --------------------------------------------------------
+    # ========================================================
 
-    if probability >= 0.10:
-        level = "High"
+    if probability < LOW_THRESHOLD:
 
-    elif probability >= 0.05:
+        level = "Low"
+
+    elif probability < HIGH_THRESHOLD:
+
         level = "Medium"
 
     else:
-        level = "Low"
 
-    # --------------------------------------------------------
+        level = "High"
+
+    # ========================================================
     # FEATURES
-    # --------------------------------------------------------
+    # ========================================================
 
     if features is None:
 
@@ -475,21 +583,21 @@ def explain_prediction(
             feature_importances.keys()
         )
 
-    # --------------------------------------------------------
-    # INSTANCE-SPECIFIC SHAP PROFILE
-    # --------------------------------------------------------
+    # ========================================================
+    # BUILD LOCAL PROFILE
+    # ========================================================
 
     if model is not None:
 
         selected = _build_function_profile(
             feature_row=feature_row,
             model=model,
+            scaler=scaler,
             features=features,
         )
 
     else:
 
-        # Safety fallback.
         selected = []
 
         for feature in features:
@@ -499,6 +607,7 @@ def explain_prediction(
             )
 
             if value is None:
+
                 value = 0.0
 
             selected.append(
@@ -511,18 +620,33 @@ def explain_prediction(
             )
 
     # --------------------------------------------------------
-    # TOP FEATURES
+    # Normalize local importance
     # --------------------------------------------------------
+
+    selected = _normalize_local_importance(
+        selected
+    )
+
+    # ========================================================
+    # TOP FEATURES
+    # ========================================================
 
     top_features = []
 
     for item in selected[:5]:
 
-        feature = item["feature"]
+        feature = item[
+            "feature"
+        ]
+
+        contribution = item[
+            "contribution"
+        ]
 
         top_features.append(
             {
                 "feature": feature,
+
                 "label": FEATURE_LABELS.get(
                     feature,
                     feature.replace(
@@ -530,42 +654,53 @@ def explain_prediction(
                         " ",
                     ),
                 ),
-                "value": item["value"],
+
+                "value": item[
+                    "value"
+                ],
+
+                # Relative 0-1 local importance
                 "importance": round(
                     item[
-                        "absolute_contribution"
+                        "display_importance"
                     ],
                     4,
                 ),
+
+                # Same normalized value for clean frontend use
                 "contribution": round(
-                    item[
-                        "contribution"
-                    ],
+                    (
+                        item[
+                            "display_importance"
+                        ]
+                        if contribution >= 0
+                        else -item[
+                            "display_importance"
+                        ]
+                    ),
                     4,
                 ),
+
                 "direction": (
                     "increases risk"
-                    if item[
-                        "contribution"
-                    ] > 0
+                    if contribution > 0
                     else "reduces risk"
                 ),
             }
         )
 
-    # --------------------------------------------------------
-    # INSTANCE-SPECIFIC SIGNALS
-    # --------------------------------------------------------
+    # ========================================================
+    # RISK-DRIVING SIGNALS
+    # ========================================================
 
     reasons = []
-
-    # We only call something a risk signal when its SHAP
-    # contribution actually pushes toward risk.
 
     positive_features = [
         item
         for item in selected
-        if item["contribution"] > 0
+        if item[
+            "contribution"
+        ] > 0
     ]
 
     positive_features.sort(
@@ -578,18 +713,22 @@ def explain_prediction(
     for item in positive_features[:3]:
 
         reasons.append(
-            _shap_signal_text(
-                feature=item["feature"],
-                value=item["value"],
+            _signal_text(
+                feature=item[
+                    "feature"
+                ],
+                value=item[
+                    "value"
+                ],
                 contribution=item[
                     "contribution"
                 ],
             )
         )
 
-    # --------------------------------------------------------
-    # FALLBACK FOR FUNCTIONS WITH NO POSITIVE SIGNAL
-    # --------------------------------------------------------
+    # ========================================================
+    # FALLBACK
+    # ========================================================
 
     if not reasons:
 
@@ -598,22 +737,30 @@ def explain_prediction(
             strongest = selected[0]
 
             label = FEATURE_LABELS.get(
-                strongest["feature"],
-                strongest["feature"].replace(
+                strongest[
+                    "feature"
+                ],
+                strongest[
+                    "feature"
+                ].replace(
                     "_",
                     " ",
                 ),
             )
 
             formatted = _format_value(
-                strongest["feature"],
-                strongest["value"],
+                strongest[
+                    "feature"
+                ],
+                strongest[
+                    "value"
+                ],
             )
 
             reasons.append(
-                f"No major risk-driving signal detected; "
-                f"strongest local feature was "
-                f"{label} ({formatted})."
+                "No major risk-driving signal "
+                "detected; strongest local feature "
+                f"was {label} ({formatted})."
             )
 
         else:
@@ -624,34 +771,29 @@ def explain_prediction(
 
     reasons = reasons[:3]
 
-    # --------------------------------------------------------
-    # RISK INDEX
-    # --------------------------------------------------------
-
-    risk_score = probability_to_risk_score(
-        probability
-    )
-
-    # --------------------------------------------------------
-    # RESPONSE
-    # --------------------------------------------------------
+    # ========================================================
+    # FINAL RESPONSE
+    # ========================================================
 
     return {
         "risk_level": level,
 
-        # Actual Random Forest probability.
-        # Kept internally for transparency/debugging.
         "risk_probability": round(
             probability,
             4,
         ),
 
-        # CodeAtlas 0-100 presentation index.
-        "risk_score": risk_score,
+        "risk_index": round(
+            probability * 100,
+            2,
+        ),
 
-        # Function-specific SHAP signals.
+        "risk_score": round(
+            probability * 100,
+            2,
+        ),
+
         "reasons": reasons,
 
-        # Detailed local feature contributions.
         "top_features": top_features,
     }

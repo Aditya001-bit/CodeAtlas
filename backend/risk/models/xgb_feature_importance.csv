@@ -1,0 +1,13 @@
+feature,importance
+complexity,0.17909299
+num_args,0.13107915
+num_returns,0.09926855
+loc,0.08991211
+betweenness,0.080976605
+max_nesting,0.067278296
+caller_count,0.064812794
+degree,0.06268711
+file_imports,0.060417946
+pagerank,0.056059577
+num_calls,0.05525663
+callee_count,0.053158157

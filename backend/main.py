@@ -8,7 +8,7 @@ import os
 from backend.parser import analyze_repository
 from backend.graph import build_graph, graph_to_json
 
-from backend.risk.feature_engineering import build_feature_table
+from backend.risk.feature_engineering import build_raw_features
 from backend.risk.predictor import RiskPredictor
 from backend.risk.gemini_explainer import explain_risk_with_gemini
 
@@ -58,25 +58,6 @@ def get_node_type(node_data):
     ).lower()
 
 
-def get_edge_relation(edge_data):
-    """
-    Get the relationship type.
-
-    graph.py stores relationships using:
-        relation="CALLS"
-        relation="IMPORTS"
-        relation="CONTAINS"
-
-    'type' is also supported for backward compatibility.
-    """
-
-    return (
-        edge_data.get("relation")
-        or edge_data.get("type")
-        or ""
-    ).upper()
-
-
 def is_file_node(node_data):
     """
     Identify file/module nodes.
@@ -104,44 +85,13 @@ def is_symbol_node(node_data):
     }
 
 
-def node_belongs_to_file(node_id, node_data, file_path):
-    """
-    Determine whether a graph node belongs to a particular file.
-
-    File nodes use the file path itself as their node ID,
-    while symbol nodes store the file path in node_data["file"].
-    """
-
-    normalized_file_path = file_path.replace(
-        "\\",
-        "/"
-    ).lstrip("/")
-
-    normalized_node_file = get_node_file(
-        node_data
-    ).replace(
-        "\\",
-        "/"
-    ).lstrip("/")
-
-    if normalized_node_file == normalized_file_path:
-        return True
-
-    if node_id.replace(
-        "\\",
-        "/"
-    ).lstrip("/") == normalized_file_path:
-        return True
-
-    return False
-
-
 # ============================================================
 # ROOT
 # ============================================================
 
 @app.get("/")
 def root():
+
     return {
         "message": "CodeAtlas backend is running"
     }
@@ -152,7 +102,9 @@ def root():
 # ============================================================
 
 @app.post("/api/analyze")
-async def analyze(file: UploadFile = File(...)):
+async def analyze(
+    file: UploadFile = File(...)
+):
 
     global current_graph
     global current_analysis
@@ -169,8 +121,14 @@ async def analyze(file: UploadFile = File(...)):
             file.filename
         )
 
-        with open(zip_path, "wb") as f:
-            f.write(await file.read())
+        with open(
+            zip_path,
+            "wb"
+        ) as f:
+
+            f.write(
+                await file.read()
+            )
 
         # ----------------------------------------------------
         # Extract repository
@@ -186,7 +144,9 @@ async def analyze(file: UploadFile = File(...)):
             "r"
         ) as zip_ref:
 
-            zip_ref.extractall(extract_path)
+            zip_ref.extractall(
+                extract_path
+            )
 
         # ----------------------------------------------------
         # Parse repository
@@ -222,9 +182,15 @@ async def analyze(file: UploadFile = File(...)):
         # ----------------------------------------------------
 
         return {
-            "files": len(parsed_files),
-            "nodes": len(current_graph.nodes),
-            "edges": len(current_graph.edges)
+            "files": len(
+                parsed_files
+            ),
+            "nodes": len(
+                current_graph.nodes
+            ),
+            "edges": len(
+                current_graph.edges
+            )
         }
 
 
@@ -240,6 +206,7 @@ async def analyze(file: UploadFile = File(...)):
 def get_graph():
 
     if current_graph is None:
+
         return {
             "error": "No repository analyzed yet"
         }
@@ -251,6 +218,12 @@ def get_graph():
 
 # ============================================================
 # HIERARCHICAL GRAPH — FILE LIST
+#
+# This is the first endpoint used by the new Code Map.
+#
+# IMPORTANT:
+# It returns only repository files.
+# It does NOT return thousands of graph nodes.
 # ============================================================
 
 @app.get("/api/graph/files")
@@ -260,6 +233,7 @@ def get_graph_files():
         current_graph is None
         or current_analysis is None
     ):
+
         return {
             "error": "No repository analyzed yet"
         }
@@ -267,7 +241,7 @@ def get_graph_files():
     files = []
 
     # --------------------------------------------------------
-    # Use parser output as source of truth for files.
+    # Use parser output as the source of truth for files.
     # --------------------------------------------------------
 
     seen_files = set()
@@ -285,7 +259,9 @@ def get_graph_files():
         if file_path in seen_files:
             continue
 
-        seen_files.add(file_path)
+        seen_files.add(
+            file_path
+        )
 
         # ----------------------------------------------------
         # Count functions/classes belonging to this file
@@ -304,21 +280,27 @@ def get_graph_files():
             if node_file != file_path:
                 continue
 
-            if is_symbol_node(node_data):
+            if is_symbol_node(
+                node_data
+            ):
+
                 symbol_count += 1
 
         files.append(
             {
                 "id": file_path,
                 "file": file_path,
-                "name": os.path.basename(file_path),
+                "name": os.path.basename(
+                    file_path
+                ),
                 "type": "file",
                 "symbol_count": symbol_count,
             }
         )
 
     files.sort(
-        key=lambda item: item["file"].lower()
+        key=lambda item:
+        item["file"].lower()
     )
 
     return {
@@ -330,20 +312,18 @@ def get_graph_files():
 # ============================================================
 # HIERARCHICAL GRAPH — FILE CONTENT
 #
-# Returns:
-#   - selected file
-#   - functions/classes inside file
-#   - CONTAINS relationships
-#   - CALLS relationships
-#   - IMPORTS relationships
+# Returns only the symbols inside ONE file.
 #
-# Imported files are included as lightweight nodes.
+# The frontend calls this after the user selects a file.
 # ============================================================
 
 @app.get("/api/graph/file/{file_path:path}")
-def get_file_graph(file_path: str):
+def get_file_graph(
+    file_path: str
+):
 
     if current_graph is None:
+
         return {
             "error": "No repository analyzed yet"
         }
@@ -361,31 +341,61 @@ def get_file_graph(file_path: str):
     # Find nodes belonging to this file
     # --------------------------------------------------------
 
-    file_node_ids = set()
+    file_nodes = []
     symbol_node_ids = set()
 
     for node_id, node_data in current_graph.nodes(
         data=True
     ):
 
-        if not node_belongs_to_file(
-            node_id,
-            node_data,
-            file_path
-        ):
+        node_file = get_node_file(
+            node_data
+        )
+
+        normalized_node_file = (
+            node_file
+            .replace("\\", "/")
+            .lstrip("/")
+        )
+
+        if normalized_node_file != file_path:
             continue
 
-        if is_file_node(node_data):
-            file_node_ids.add(node_id)
+        # ----------------------------------------------------
+        # File/module node
+        # ----------------------------------------------------
 
-        elif is_symbol_node(node_data):
-            symbol_node_ids.add(node_id)
+        if is_file_node(
+            node_data
+        ):
+
+            file_nodes.append(
+                {
+                    "id": node_id,
+                    **node_data,
+                }
+            )
+
+        # ----------------------------------------------------
+        # Function/class node
+        # ----------------------------------------------------
+
+        elif is_symbol_node(
+            node_data
+        ):
+
+            symbol_node_ids.add(
+                node_id
+            )
 
     # --------------------------------------------------------
     # File not found
     # --------------------------------------------------------
 
-    if not file_node_ids and not symbol_node_ids:
+    if (
+        not file_nodes
+        and not symbol_node_ids
+    ):
 
         return {
             "error": "File not found",
@@ -393,57 +403,37 @@ def get_file_graph(file_path: str):
         }
 
     # --------------------------------------------------------
-    # All nodes that belong to selected file
+    # Build symbol nodes
     # --------------------------------------------------------
 
-    selected_node_ids = (
-        file_node_ids
-        | symbol_node_ids
-    )
+    nodes = []
 
-    # The graph uses the file path itself as the file node ID.
-    if current_graph.has_node(file_path):
-        selected_node_ids.add(file_path)
-        file_node_ids.add(file_path)
-
-    # --------------------------------------------------------
-    # Build initial nodes
-    # --------------------------------------------------------
-
-    nodes_by_id = {}
-
-    for node_id in selected_node_ids:
-
-        if node_id not in current_graph.nodes:
-            continue
+    for node_id in symbol_node_ids:
 
         node_data = current_graph.nodes[
             node_id
         ]
 
-        nodes_by_id[node_id] = {
-            "id": node_id,
-            **node_data,
-        }
+        nodes.append(
+            {
+                "id": node_id,
+                **node_data,
+            }
+        )
 
     # --------------------------------------------------------
-    # Build relationships
+    # Add file node if available
+    # --------------------------------------------------------
+
+    nodes = (
+        file_nodes
+        + nodes
+    )
+
+    # --------------------------------------------------------
+    # Only include relationships INSIDE this file.
     #
-    # We include:
-    #
-    # 1. File -> Function/Class
-    #       CONTAINS
-    #
-    # 2. Function -> Function
-    #       CALLS
-    #
-    # 3. File -> Imported File
-    #       IMPORTS
-    #
-    # 4. Incoming IMPORTS
-    #       Other File -> Selected File
-    #
-    # We intentionally do NOT create fake runtime relationships.
+    # This keeps the graph small.
     # --------------------------------------------------------
 
     edges = []
@@ -452,146 +442,26 @@ def get_file_graph(file_path: str):
         data=True
     ):
 
-        relation = get_edge_relation(
-            data
-        )
+        if (
+            source in symbol_node_ids
+            and target in symbol_node_ids
+        ):
 
-        source_selected = (
-            source in selected_node_ids
-        )
-
-        target_selected = (
-            target in selected_node_ids
-        )
-
-        # ----------------------------------------------------
-        # CONTAINS
-        #
-        # File -> Function/Class inside selected file
-        # ----------------------------------------------------
-
-        if relation == "CONTAINS":
-
-            if (
-                source_selected
-                and target_selected
-            ):
-
-                edges.append(
-                    {
-                        "source": source,
-                        "target": target,
-                        **data,
-                    }
-                )
-
-        # ----------------------------------------------------
-        # CALLS
-        #
-        # Function -> Function
-        # ----------------------------------------------------
-
-        elif relation == "CALLS":
-
-            if (
-                source_selected
-                and target_selected
-            ):
-
-                edges.append(
-                    {
-                        "source": source,
-                        "target": target,
-                        **data,
-                    }
-                )
-
-        # ----------------------------------------------------
-        # IMPORTS
-        #
-        # Selected file -> imported file
-        #
-        # Also include:
-        # other file -> selected file
-        # ----------------------------------------------------
-
-        elif relation == "IMPORTS":
-
-            if (
-                source in selected_node_ids
-                or target in selected_node_ids
-            ):
-
-                edges.append(
-                    {
-                        "source": source,
-                        "target": target,
-                        **data,
-                    }
-                )
-
-                # Add external imported file as lightweight node
-                for related_id in [
-                    source,
-                    target
-                ]:
-
-                    if related_id in nodes_by_id:
-                        continue
-
-                    if related_id not in current_graph.nodes:
-                        continue
-
-                    related_data = current_graph.nodes[
-                        related_id
-                    ]
-
-                    if is_file_node(
-                        related_data
-                    ):
-
-                        nodes_by_id[related_id] = {
-                            "id": related_id,
-                            **related_data,
-                        }
-
-    # --------------------------------------------------------
-    # Convert nodes dictionary to list
-    # --------------------------------------------------------
-
-    nodes = list(
-        nodes_by_id.values()
-    )
-
-    # --------------------------------------------------------
-    # Remove duplicate edges
-    # --------------------------------------------------------
-
-    unique_edges = []
-    seen_edges = set()
-
-    for edge in edges:
-
-        edge_key = (
-            edge["source"],
-            edge["target"],
-            get_edge_relation(edge)
-        )
-
-        if edge_key in seen_edges:
-            continue
-
-        seen_edges.add(edge_key)
-
-        unique_edges.append(
-            edge
-        )
+            edges.append(
+                {
+                    "source": source,
+                    "target": target,
+                    **data,
+                }
+            )
 
     return {
         "file": file_path,
         "nodes": nodes,
-        "edges": unique_edges,
-        "symbol_count": len(symbol_node_ids)
+        "edges": edges,
+        "symbol_count": len(
+            symbol_node_ids
+        )
     }
 
 
@@ -600,14 +470,18 @@ def get_file_graph(file_path: str):
 # ============================================================
 
 @app.get("/api/graph/node/{node_id:path}")
-def get_node(node_id: str):
+def get_node(
+    node_id: str
+):
 
     if current_graph is None:
+
         return {
             "error": "No repository analyzed yet"
         }
 
     if node_id not in current_graph.nodes:
+
         return {
             "error": "Node not found"
         }
@@ -619,7 +493,6 @@ def get_node(node_id: str):
     callers = []
     callees = []
     dependencies = []
-    contained_nodes = []
 
     # --------------------------------------------------------
     # Find relationships
@@ -629,8 +502,8 @@ def get_node(node_id: str):
         data=True
     ):
 
-        relation = get_edge_relation(
-            data
+        edge_type = data.get(
+            "type"
         )
 
         # ----------------------------------------------------
@@ -639,7 +512,7 @@ def get_node(node_id: str):
 
         if (
             target == node_id
-            and relation == "CALLS"
+            and edge_type == "CALLS"
         ):
 
             callers.append(
@@ -652,7 +525,7 @@ def get_node(node_id: str):
 
         if (
             source == node_id
-            and relation == "CALLS"
+            and edge_type == "CALLS"
         ):
 
             callees.append(
@@ -665,30 +538,20 @@ def get_node(node_id: str):
 
         if (
             source == node_id
-            and relation == "IMPORTS"
+            and edge_type == "IMPORTS"
         ):
 
             dependencies.append(
                 target
             )
 
-        # ----------------------------------------------------
-        # What does this file contain?
-        # ----------------------------------------------------
-
-        if (
-            source == node_id
-            and relation == "CONTAINS"
-        ):
-
-            contained_nodes.append(
-                target
-            )
-
     # --------------------------------------------------------
     # Build LOCAL GRAPH
     #
-    # Selected node + direct relationships.
+    # Only selected node + direct callers/callees/dependencies.
+    #
+    # This is intentionally tiny compared with the complete
+    # repository graph.
     # --------------------------------------------------------
 
     related_ids = set(
@@ -696,7 +559,6 @@ def get_node(node_id: str):
         + callers
         + callees
         + dependencies
-        + contained_nodes
     )
 
     related_nodes = []
@@ -723,10 +585,6 @@ def get_node(node_id: str):
         data=True
     ):
 
-        relation = get_edge_relation(
-            data
-        )
-
         if (
             source in related_ids
             and target in related_ids
@@ -747,7 +605,6 @@ def get_node(node_id: str):
         "callers": callers,
         "callees": callees,
         "dependencies": dependencies,
-        "contained_nodes": contained_nodes,
 
         "local_graph": {
             "nodes": related_nodes,
@@ -767,21 +624,41 @@ def get_risk():
         current_graph is None
         or current_analysis is None
     ):
+
         return {
             "error": "No repository analyzed yet"
         }
 
     # --------------------------------------------------------
-    # Build ML feature table
+    # IMPORTANT:
+    #
+    # Use RAW features here.
+    #
+    # Do NOT use build_feature_table(), because that function
+    # adds percentile-normalized features.
+    #
+    # The final production model already performs:
+    #
+    # raw features
+    #      ↓
+    # StandardScaler
+    #      ↓
+    # Logistic Regression
+    #      ↓
+    # Isotonic calibration
+    #
+    # This must match the production training pipeline.
     # --------------------------------------------------------
 
-    feature_rows = build_feature_table(
+    feature_rows = build_raw_features(
         current_analysis,
         current_graph
     )
 
     # --------------------------------------------------------
-    # Random Forest prediction
+    # FINAL PRODUCTION MODEL
+    #
+    # Logistic Regression + Isotonic Calibration
     # --------------------------------------------------------
 
     predictions = risk_predictor.predict(
@@ -796,27 +673,30 @@ def get_risk():
 # ============================================================
 
 @app.get("/api/risk/explain/{node_id:path}")
-def explain_risk(node_id: str):
+def explain_risk(
+    node_id: str
+):
 
     if (
         current_graph is None
         or current_analysis is None
     ):
+
         return {
             "error": "No repository analyzed yet"
         }
 
     # --------------------------------------------------------
-    # Build feature table
+    # Use the EXACT same raw features as /api/risk.
     # --------------------------------------------------------
 
-    feature_rows = build_feature_table(
+    feature_rows = build_raw_features(
         current_analysis,
         current_graph
     )
 
     # --------------------------------------------------------
-    # Get Random Forest predictions
+    # Get FINAL ML predictions
     # --------------------------------------------------------
 
     predictions = risk_predictor.predict(
@@ -837,16 +717,15 @@ def explain_risk(node_id: str):
     )
 
     if prediction is None:
+
         return {
             "error": "Risk prediction not found"
         }
 
     # --------------------------------------------------------
-    # Ask Gemini to explain the prediction
+    # Gemini ONLY explains the ML prediction.
     #
-    # IMPORTANT:
-    # Random Forest decides the risk.
-    # Gemini ONLY explains it.
+    # Gemini does NOT determine risk.
     # --------------------------------------------------------
 
     explanation = explain_risk_with_gemini(
@@ -915,6 +794,7 @@ def ask_codebase(
 ):
 
     if current_rag is None:
+
         return {
             "error": "No repository analyzed yet"
         }
